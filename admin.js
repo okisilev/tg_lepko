@@ -4,6 +4,7 @@ const fs = require('fs');        // ✅ для createWriteStream
 const fsPromises = require('fs').promises; // для async операций
 const path = require('path');
 const axios = require('axios');
+const { parse, format } = require('date-fns'); // ✅ Добавлено
 
 const composer = new Composer();
 
@@ -34,31 +35,32 @@ composer.command('admin', isAdmin, async (ctx) => {
 composer.action('admin_set_photo', isAdmin, async (ctx) => {
   await ctx.answerCbQuery();
   ctx.scene.session.adminStep = 'awaiting_date_for_photo';
-  await ctx.reply('Введите дату в формате ГГГГ-ММ-ДД:');
+  await ctx.reply('Введите дату в формате ДД-ММ-ГГГГ (например, 13-01-2026):');
 });
 
 composer.on('text', async (ctx, next) => {
-    if (ctx.scene?.session?.adminStep === 'awaiting_date_for_photo') {
-      const input = ctx.message.text.trim();
-      // Принимаем ДД-ММ-ГГГГ
-      if (!/^\d{2}-\d{2}-\d{4}$/.test(input)) {
-        return ctx.reply('Формат: ДД-ММ-ГГГГ (например, 13-01-2026)');
-      }
-  
-      let storageDate;
-      try {
-        const parsed = parse(input, 'dd-MM-yyyy', new Date());
-        storageDate = format(parsed, 'yyyy-MM-dd');
-      } catch (e) {
-        return ctx.reply('Неверная дата. Попробуйте снова.');
-      }
-  
-      ctx.scene.session.photoDate = storageDate; // храним в БД-формате
-      ctx.scene.session.adminStep = 'awaiting_photo';
-      return ctx.reply('Отправьте фото:');
+  if (ctx.scene?.session?.adminStep === 'awaiting_date_for_photo') {
+    const input = ctx.message.text.trim();
+
+    // Принимаем только ДД-ММ-ГГГГ
+    if (!/^\d{2}-\d{2}-\d{4}$/.test(input)) {
+      return ctx.reply('Формат: ДД-ММ-ГГГГ (например, 13-01-2026)');
     }
-    return next();
-  });
+
+    let storageDate;
+    try {
+      const parsed = parse(input, 'dd-MM-yyyy', new Date());
+      storageDate = format(parsed, 'yyyy-MM-dd'); // сохраняем в БД-формате
+    } catch (e) {
+      return ctx.reply('Неверная дата. Попробуйте снова.');
+    }
+
+    ctx.scene.session.photoDate = storageDate;
+    ctx.scene.session.adminStep = 'awaiting_photo';
+    return ctx.reply('Отправьте фото:');
+  }
+  return next();
+});
 
 composer.on('photo', async (ctx, next) => {
   if (ctx.scene?.session?.adminStep === 'awaiting_photo') {
@@ -81,7 +83,7 @@ composer.on('photo', async (ctx, next) => {
 
       await fsPromises.mkdir(uploadDir, { recursive: true });
 
-      const writer = fs.createWriteStream(filePath); // ✅ теперь работает
+      const writer = fs.createWriteStream(filePath);
       response.data.pipe(writer);
 
       await new Promise((resolve, reject) => {

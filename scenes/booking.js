@@ -5,7 +5,7 @@ const yookassa = require('../yookassa');
 const fs = require('fs');
 const path = require('path');
 
-const TIME_SLOTS = ['11:00', '13:00', '15:00', '17:00', '18:30'];
+const TIME_SLOTS = ['11:00', '14:00', '15:00', '17:00', '18:30'];
 const DISPLAY_FORMAT = 'dd-MM-yyyy';
 const STORAGE_FORMAT = 'yyyy-MM-dd';
 
