@@ -78,7 +78,7 @@ composer.on('photo', async (ctx, next) => {
       });
 
       const filename = `${date}.jpg`;
-      const uploadDir = path.join(__dirname, '..', 'uploads');
+      const uploadDir = path.join(__dirname, 'uploads');
       const filePath = path.join(uploadDir, filename);
 
       await fsPromises.mkdir(uploadDir, { recursive: true });
