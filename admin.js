@@ -26,7 +26,8 @@ composer.command('admin', isAdmin, async (ctx) => {
       inline_keyboard: [
         [{ text: '📸 Установить фото на дату', callback_data: 'admin_set_photo' }],
         [{ text: '📤 Рассылка', callback_data: 'admin_broadcast' }],
-        [{ text: '📊 Отчёты', callback_data: 'admin_reports' }]
+        [{ text: '📊 Отчёты', callback_data: 'admin_reports' }],
+        [{ text: '📋 Отчёт по электронным талонам', callback_data: 'admin_voucher_report' }]
       ]
     }
   });
@@ -145,4 +146,61 @@ composer.action('admin_reports', isAdmin, async (ctx) => {
   }
 });
 
-module.exports = { register: (bot) => bot.use(composer.middleware()), isAdmin };
+composer.action('admin_voucher_report', isAdmin, async (ctx) => {
+  await ctx.answerCbQuery();
+  const vouchers = await db.getVouchers();
+  if (vouchers.length === 0) {
+    return ctx.reply('Нет купленных талонов.');
+  }
+
+  let msg = `📋 Отчёт по электронным талонам:\n\n`;
+  vouchers.forEach(v => {
+    const status = v.is_voucher_redeemed ? '✅ Погашен' : '⏳ Не погашен';
+    msg += `🔹 Номер: ${v.voucher_number}\n   Сумма: ${v.amount} ₽\n   Имя: ${v.name}\n   Телефон: ${v.phone}\n   Username: @${v.username || 'не указан'}\n   User ID: ${v.user_id}\n   Статус: ${status}\n\n`;
+  });
+
+  await ctx.reply(msg, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'Погасить талон', callback_data: 'redeem_voucher' }]
+      ]
+    }
+  });
+});
+  
+  // Обработка кнопки "Погасить талон"
+  composer.action('redeem_voucher', isAdmin, async (ctx) => {
+    await ctx.answerCbQuery();
+    ctx.scene.session.adminStep = 'awaiting_voucher_number';
+    await ctx.reply('Введите номер талона для погашения:');
+  });
+  
+  composer.on('text', async (ctx, next) => {
+    if (ctx.scene?.session?.adminStep === 'awaiting_voucher_number') {
+      const number = ctx.message.text.trim();
+      const result = await db.redeemVoucher(number);
+      if (result) {
+        await ctx.reply(`✅ Талон ${number} успешно погашен.`);
+      } else {
+        await ctx.reply(`❌ Талон ${number} не найден или уже погашен.`);
+      }
+      delete ctx.scene.session.adminStep;
+      return;
+    }
+    return next();
+  });
+
+  function getAdminMenu() {
+    return {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📸 Установить фото на дату', callback_data: 'admin_set_photo' }],
+          [{ text: '📤 Рассылка', callback_data: 'admin_broadcast' }],
+          [{ text: '📊 Отчёты', callback_data: 'admin_reports' }],
+          [{ text: '📋 Отчёт по электронным талонам', callback_data: 'admin_voucher_report' }]
+        ]
+      }
+    };
+  }
+
+module.exports = { register: (bot) => bot.use(composer.middleware()), isAdmin, getAdminMenu };

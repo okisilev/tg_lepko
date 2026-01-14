@@ -13,7 +13,7 @@ if (!YOO_SHOP_ID || !YOO_SECRET_KEY) {
 /**
  * Создаёт платёж в ЮKassa
  */
-async function createPayment({ date, time, userId, people_count }) {
+async function createPayment({ date, time, userId, people_count, amount }) {
     if (!YOO_SHOP_ID || !YOO_SECRET_KEY) {
       throw new Error('ЮKassa не настроен');
     }
@@ -29,9 +29,9 @@ async function createPayment({ date, time, userId, people_count }) {
       const response = await axios.post(
         'https://api.yookassa.ru/v3/payments',
         {
-            amount: { value: (500 * people_count).toFixed(2), currency: 'RUB' },
+            amount: { value: amount.toFixed(2), currency: 'RUB' },
             confirmation: { type: 'redirect', return_url: returnUrl },
-            description: `Мастер-класс ${date} в ${time} (${people_count} чел.)`,
+            description: `Мастер-класс ${date || ''} ${time ? `в ${time}` : ''} (${people_count} чел.)`,
             meta: { userId: String(userId) },
             capture: true
         },

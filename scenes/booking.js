@@ -252,11 +252,12 @@ async function startPollingPayment(ctx, paymentId, people_count, date, time) {
       const payment = await yookassa.getPaymentStatus(paymentId);
       if (payment.status === 'succeeded') {
         await db.updatePaymentStatus(paymentId, 'succeeded');
-        const booking = await db.getBookingByPaymentId(paymentId);
-        if (booking) {
-          const admins = await db.getAllAdmins();
-          const msg = `✅ Новая запись!\nДата: ${booking.workshop_date}\nВремя: ${booking.time_slot}\nИмя: ${booking.name}\nТелефон: ${booking.phone}\n👥 Участников: ${booking.people_count}`;
-          for (const id of admins) {
+        const booking = await db.getBookingByPaymentId(paymentData.id);
+if (booking) {
+  const admins = await db.getAllAdmins();
+  const msg = `✅ Новая запись!\nУслуга: ${SERVICES[serviceType].name}\nНоминал: ${finalAmount} ₽\nНомер талона: ${voucherNumber || '—'}\nИмя: ${booking.name}\nТелефон: ${booking.phone}\nUsername: @${ctx.from.username || 'не указан'}\nUser ID: ${userId}`;
+  
+  for (const id of admins) {
             try { await ctx.telegram.sendMessage(id, msg); } catch (e) {}
           }
           try {
