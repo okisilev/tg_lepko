@@ -1,20 +1,22 @@
 // scenes/order.js
 const { Scenes } = require('telegraf');
-const { parse, format } = require('date-fns');
-const { SERVICES, getAvailableDates } = require('../services');
+const { ru } = require('date-fns/locale');
+const {
+  parse,
+  format,
+  addDays,
+  startOfWeek
+} = require('date-fns');
+const { SERVICES } = require('../services');
 const db = require('../db');
 const yookassa = require('../yookassa');
-const { ru } = require('date-fns/locale');
-const { format, addDays, eachDayOfInterval, startOfWeek, endOfWeek, isSameMonth } = require('date-fns');
 
 const orderScene = new Scenes.BaseScene('order');
 
-// Генерация уникального номера талона
 function generateVoucherNumber() {
   return 'VT' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2, 5).toUpperCase();
 }
 
-// Вход в сцену
 orderScene.enter(async (ctx) => {
   const serviceType = ctx.scene.session.service;
   const service = SERVICES[serviceType];
@@ -47,22 +49,51 @@ orderScene.enter(async (ctx) => {
     return ctx.reply('Опишите желаемое изделие или загрузите картинку:');
   }
 
-  const dates = getAvailableDates();
-  const buttons = dates.map(d => [{ text: d, callback_data: `date_${d}` }]);
-  await ctx.reply('Выберите дату:', {
-    reply_markup: { inline_keyboard: buttons }
-  });
+  // === КАЛЕНДАРЬ ===
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const endDate = addDays(new Date(today), 29);
+
+  const weekdaysHeader = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  const headerRow = weekdaysHeader.map(day => ({ 
+    text: day, 
+    callback_data: 'ignore' 
+  }));
+
+  const inlineKeyboard = [headerRow];
+
+  let currentWeekStart = startOfWeek(today, { weekStartsOn: 1 });
+
+  for (let week = 0; week < 6; week++) {
+    const row = [];
+    for (let day = 0; day < 7; day++) {
+      const date = addDays(currentWeekStart, day);
+      if (date >= today && date <= endDate) {
+        const displayDate = format(date, 'dd-MM-yyyy', { locale: ru });
+        const dayLabel = format(date, 'dd', { locale: ru });
+        row.push({ text: dayLabel, callback_data: `date_${displayDate}` });
+      } else {
+        row.push({ text: '·', callback_data: 'ignore' });
+      }
+    }
+    inlineKeyboard.push(row);
+    currentWeekStart = addDays(currentWeekStart, 7);
+  }
+  inlineKeyboard.push([{ text: '🔙 Назад', callback_data: 'back_to_main_menu' }]);
+  await ctx.reply('Выберите дату:', { reply_markup: { inline_keyboard: inlineKeyboard } });
 });
 
-// Выбор суммы талона
-orderScene.action(/voucher_(\d+)/, async (ctx) => {
-    const amount = parseInt(ctx.match[1]);
-    ctx.scene.session.amount = amount; // ← правильно
-    ctx.scene.session.voucher_number = generateVoucherNumber();
-    return collectName(ctx);
-  });
+orderScene.action('ignore', async (ctx) => {
+  await ctx.answerCbQuery();
+});
 
-// Выбор даты
+orderScene.action(/voucher_(\d+)/, async (ctx) => {
+  const amount = parseInt(ctx.match[1]);
+  ctx.scene.session.amount = amount;
+  ctx.scene.session.voucher_number = generateVoucherNumber();
+  return collectName(ctx);
+});
+
 orderScene.action(/date_(\d{2}-\d{2}-\d{4})/, async (ctx) => {
   const displayDate = ctx.match[1];
   let storageDate;
@@ -79,9 +110,14 @@ orderScene.action(/date_(\d{2}-\d{2}-\d{4})/, async (ctx) => {
   const service = SERVICES[serviceType];
   const keyboard = [];
 
+  // Определяем длительность в зависимости от типа услуги
+  const durationHours = serviceType === 'date' ? 3 : 1;
+  
   for (const time of service.timeSlots) {
-    const count = await db.getBookingsCount(storageDate, time);
-    if (count < service.maxPeople) {
+    // Проверяем доступность с учетом длительности
+    const isAvailable = await checkTimeAvailability(storageDate, time, durationHours, service.maxPeople);
+    
+    if (isAvailable) {
       keyboard.push([{ text: time, callback_data: `time_${time}` }]);
     }
   }
@@ -96,7 +132,6 @@ orderScene.action(/date_(\d{2}-\d{2}-\d{4})/, async (ctx) => {
   });
 });
 
-// Выбор времени
 orderScene.action(/time_(.+)/, async (ctx) => {
   ctx.scene.session.time = ctx.match[1];
   const serviceType = ctx.scene.session.service;
@@ -104,23 +139,28 @@ orderScene.action(/time_(.+)/, async (ctx) => {
   if (serviceType === 'party' || serviceType === 'family') {
     const max = serviceType === 'party' ? 20 : 15;
     ctx.scene.session.step = 'people_count';
-    return ctx.reply(`Сколько будет людей? (от 4 до ${max}):`);
+    return ctx.reply(`Сколько будет людей? (от 4 до ${max}):`, {
+      reply_markup: {
+        keyboard: [[{ text: '🔙 Назад' }]],
+        resize_keyboard: true,
+        one_time_keyboard: true
+      }
+    });
   }
 
   if (serviceType === 'custom') {
-    return ctx.reply('Опишите желаемое изделие или загрузите картинку:');
+    return ctx.reply('Опишите желаемое изделие или загрузите картинку:', {
+      reply_markup: {
+        keyboard: [[{ text: '🔙 Назад' }]],
+        resize_keyboard: true,
+        one_time_keyboard: true
+      }
+    });
   }
 
   return collectName(ctx);
 });
 
-// Кнопка "Назад"
-orderScene.hears('🔙 Назад', (ctx) => {
-  ctx.scene.leave();
-  sendMainMenu(ctx);
-});
-
-// Обработка текста
 orderScene.on('text', async (ctx) => {
   const step = ctx.scene.session.step;
   const serviceType = ctx.scene.session.service;
@@ -154,7 +194,6 @@ orderScene.on('text', async (ctx) => {
   }
 });
 
-// Обработка фото
 orderScene.on('photo', async (ctx) => {
   if (ctx.scene.session.service === 'custom') {
     ctx.scene.session.photo_file_id = ctx.message.photo[0].file_id;
@@ -162,7 +201,6 @@ orderScene.on('photo', async (ctx) => {
   }
 });
 
-// Обработка контакта → оплата
 orderScene.on('contact', async (ctx) => {
   const session = ctx.scene.session;
   const serviceType = session.service;
@@ -171,22 +209,15 @@ orderScene.on('contact', async (ctx) => {
     await ctx.reply('❌ Ошибка: не выбрана услуга.');
     return ctx.scene.leave();
   }
-  
-  if (!session.amount && serviceType === 'voucher') {
-    await ctx.reply('❌ Ошибка: не указана сумма талона.');
-    return ctx.scene.leave();
-  }
-  
-
 
   const userId = ctx.from.id;
   const phone = ctx.message.contact.phone_number;
-  //const finalAmount = session.amount || SERVICES[serviceType]?.basePrice || 0;
-  const finalAmount = serviceType === 'voucher' 
-  ? session.amount 
-  : SERVICES[serviceType]?.basePrice || 0;
+  const finalAmount = session.amount || SERVICES[serviceType]?.deposit || SERVICES[serviceType]?.basePrice || 0;
 
-  console.log('Сумма для оплаты:', finalAmount);
+  if (!finalAmount || finalAmount <= 0) {
+    await ctx.reply('❌ Ошибка: не удалось определить сумму платежа.');
+    return ctx.scene.leave();
+  }
 
   try {
     const paymentData = await yookassa.createPayment({
@@ -198,9 +229,15 @@ orderScene.on('contact', async (ctx) => {
       description: `${SERVICES[serviceType].name} ${session.date || ''}`
     });
 
+    let durationHours = 1;
+    if (serviceType === 'date') {
+      durationHours = 3;
+    }
+
     await db.createBooking({
       workshop_date: session.date || null,
       time_slot: session.time || null,
+      duration_hours: durationHours,
       user_id: userId,
       name: session.name,
       phone,
@@ -211,7 +248,6 @@ orderScene.on('contact', async (ctx) => {
       username: ctx.from.username || null,
       description: session.description || null,
       photo_file_id: session.photo_file_id || null,
-      username: ctx.from.username || null,
       payment_id: paymentData.id
     });
 
@@ -221,7 +257,6 @@ orderScene.on('contact', async (ctx) => {
     );
 
     startPollingPayment(ctx, paymentData.id, finalAmount, serviceType, session.date, session.time);
-
     ctx.scene.leave();
   } catch (e) {
     console.error('Ошибка платежа:', e);
@@ -230,7 +265,6 @@ orderScene.on('contact', async (ctx) => {
   }
 });
 
-// Вспомогательные функции
 async function collectName(ctx) {
   ctx.scene.session.step = 'name';
   await ctx.reply('Ваше имя:', {
@@ -242,24 +276,53 @@ async function collectName(ctx) {
   });
 }
 
-function sendMainMenu(ctx) {
+async function sendMainMenu(ctx) {
   const mainMenuButtons = [
-    [{ text: 'Записаться на МК (2500₽)', callback_data: 'service_mk' }],
-    [{ text: 'Записаться на глазурный МК (1200₽)', callback_data: 'service_glaze' }],
+    [{ text: 'Записаться на МК (предоплата 500₽)', callback_data: 'service_mk' }],
+    [{ text: 'Записаться на глазурный МК (предоплата 500₽)', callback_data: 'service_glaze' }],
     [{ text: 'Купить эл. талон на лепку (от 1000₽)', callback_data: 'service_voucher' }],
-    [{ text: 'Записаться на свидание (5000₽)', callback_data: 'service_date' }],
-    [{ text: 'Записаться на индивид. МК (5000₽)', callback_data: 'service_individual' }],
-    [{ text: 'Предложить свой МК (2500₽)', callback_data: 'service_custom' }],
-    [{ text: 'Организация праздников (от 6500₽)', callback_data: 'service_party' }],
-    [{ text: 'Семейный МК (от 6500₽)', callback_data: 'service_family' }],
-    [{ text: 'Аренда помещения (от 2000₽)', callback_data: 'service_rent' }],
-    [{ text: 'Изделие на заказ (от 4000₽)', callback_data: 'service_order' }],
-    [{ text: 'Абонемент 4 занятия (7200₽)', callback_data: 'service_abonement' }]
+    [{ text: 'Записаться на свидание (предоплата 1000₽)', callback_data: 'service_date' }],
+    [{ text: 'Записаться на индивид. МК (предоплата 1000₽)', callback_data: 'service_individual' }],
+    [{ text: 'Предложить свой МК (без предоплаты)', callback_data: 'service_custom' }],
+    [{ text: 'Организация праздников (предоплата 1000₽)', callback_data: 'service_party' }],
+    [{ text: 'Семейный МК (предоплата 1000₽)', callback_data: 'service_family' }],
+    [{ text: 'Аренда помещения (предоплата 1000₽)', callback_data: 'service_rent' }],
+    [{ text: 'Изделие на заказ (без предоплаты)', callback_data: 'service_order' }],
+    [{ text: 'Абонемент 4 занятия (предоплата 1000₽)', callback_data: 'service_abonement' }],
+    [{ text: '🛠️ Админка', callback_data: 'open_admin_panel' }]
   ];
-  ctx.reply('Главное меню:', { reply_markup: { inline_keyboard: mainMenuButtons } });
+  await ctx.reply('Главное меню:', { reply_markup: { inline_keyboard: mainMenuButtons } });
 }
 
-// Polling статуса платежа
+async function checkTimeAvailability(date, time, durationHours, maxPeople) {
+  const [hours, minutes] = time.split(':').map(Number);
+  const startMinutes = hours * 60 + minutes;
+  const endMinutes = startMinutes + durationHours * 60;
+  
+  try {
+    // Получаем все успешные бронирования на эту дату
+    const bookings = await db.getAllBookingsForDate(date);
+    
+    // Проверяем каждое существующее бронирование на пересечение
+    for (const booking of bookings) {
+      const [bh, bm] = booking.time_slot.split(':').map(Number);
+      const bookingStart = bh * 60 + bm;
+      const bookingDuration = booking.duration_hours || (booking.service_type === 'date' ? 3 : 1);
+      const bookingEnd = bookingStart + bookingDuration * 60;
+      
+      // Если интервалы пересекаются
+      if (!(endMinutes <= bookingStart || startMinutes >= bookingEnd)) {
+        return false; // Время недоступно
+      }
+    }
+    
+    return true; // Время доступно
+  } catch (error) {
+    console.error('Ошибка проверки доступности времени:', error);
+    return false;
+  }
+}
+
 async function startPollingPayment(ctx, paymentId, amount, serviceType, date, time) {
   const maxAttempts = 40;
   const intervalMs = 15000;
@@ -286,7 +349,8 @@ async function startPollingPayment(ctx, paymentId, amount, serviceType, date, ti
 
           msg += `Имя: ${booking.name}\n`;
           msg += `Телефон: ${booking.phone}\n`;
-          msg += `Username: @${ctx.from.username || 'не указан'}\n`;
+          const username = booking.username ? `@${booking.username}` : 'не указан';
+          msg += `Пользователь: ${username}\n`;
           msg += `User ID: ${booking.user_id}`;
 
           for (const id of admins) {
@@ -309,5 +373,16 @@ async function startPollingPayment(ctx, paymentId, amount, serviceType, date, ti
 
   setTimeout(checkStatus, intervalMs);
 }
+
+orderScene.hears('🔙 Назад', (ctx) => {
+  ctx.scene.leave();
+  sendMainMenu(ctx);
+});
+
+orderScene.action('back_to_main_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.scene.leave();
+  sendMainMenu(ctx);
+});
 
 module.exports = { orderScene };
